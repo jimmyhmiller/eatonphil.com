@@ -1,0 +1,124 @@
+# Web server basics (2): Programmable routing
+## April 28, 2019
+
+<p class="note">
+  Previously in web server basics:
+  <! forgive me, for I have sinned >
+  <br />
+  <a href="/web-server-basics-http-and-sockets.html">Web server basics (1): HTTP and sockets</a>
+</p>
+
+The first pass at building a web server hard-coded routing logic into
+the web server itself. In this post we'll abstract the router so it
+can be passed into the server by an application. For a simple
+application that stores a user and its nickname, we might want the
+server/router interface to look like this:
+
+```javascript
+const router = new HTTPRouter();
+router.get('/hello/:user', handleGetHelloUser);
+router.post('/hello/:user', handlePostHelloUser);
+const server = new HTTPServer(router);
+server.listen('9000');
+```
+
+Such that we can handle the following interactions:
+
+```bash
+$ curl localhost:9000/hello/eatonphil
+Hello eatonphil!
+$ curl -X POST localhost:9000/eatonphil -H 'Content-Type: application/json' -d '{ "nickname": "phil" }'
+$ curl localhost:9000/hello/eatonphil
+Hello phil!
+```
+
+### Application logic
+
+We can further sketch out the application-facing APIs we need by
+building the application itself. The GET handler needs to grab a
+<code>user</code> parameter from the request and look it up in
+application state. If there is no associated nickname, return a
+message with the passed parameter.
+
+```javascript
+const state = {};
+
+function handleGetHelloUser(request, response) {
+  const { user } = request.variables;
+  const nickname = state[user] || user;
+  response.status(200);
+  response.body('Hello ' + user + '!');
+}
+```
+
+#### handlePostHelloUser
+
+The post handler should update the nickname for the given user in
+application state and return nothing.
+
+```javascript
+function handlePostHelloUser(request, response) {
+  const { user } = request.variables;
+  const body = request.json();
+  state[user] = body.nickname;
+  response.status(200);
+}
+```
+
+### HTTPRouter
+
+Now that we've got an idea how we want to register handlers to the
+router, and we know the arguments we'd like to receive from the
+router, we can sketch out the router. When asked to register a
+handler, we'll store the route in a tree structure. Then when the
+router is asked to process a request, we'll traverse the route tree
+and forward request and response objects to the appropriate handler.
+
+```javascript
+class HTTPRouter {
+  constructor() {
+	this.routes = {
+	  get: {},
+	  post: {},
+	};
+  }
+
+  addRoute(tree, route, handler) {
+    if (!route.includes("/")) {
+	  tree[route] = {
+	    type: 'handler',
+		handler,
+	  };
+	  return;
+	}
+
+    const [part, ...rest] = route.split('/');
+	if (part.startsWith(':')) {
+	  route[part] = {
+	    type: 'variable',
+		name: part,
+        routes: {},
+	  };
+	  this.addRoute(route[part].routes, rest.join('/'), handler);
+	  return;
+	}
+	
+	if (!route[part]) {
+	  route[part] = {
+	    type: 'segment',
+		routes: {},
+	  };
+	}
+	
+	this.addRoute(route[part].routes, rest.join('/'), handler);
+  }
+
+  get(route, handler) {
+    this.addRoute(this.routes.get, route, handler);
+  }
+  
+  post(route, handler) {
+    this.addRoute(this.routes.get, route, handler);
+  }
+}
+```
