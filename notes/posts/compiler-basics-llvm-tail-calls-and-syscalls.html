@@ -1,0 +1,279 @@
+# Compiler basics: LLVM tail calls and syscalls
+## June 8, 2019
+###### javascript,compilers,llvm,tco,tce
+
+<p class="note">
+  Previously in compiler basics:
+  <! forgive me, for I have sinned >
+  <br />
+  <a href="/compiler-basics-lisp-to-assembly.html">Compiler basics (1): lisp to assembly</a>
+  <br />
+  <a href="/compiler-basics-functions.html">Compiler basics (2): user-defined functions and variables</a>
+  <br />
+  <a href="/compiler-basics-llvm.html">Compiler basics (3): LLVM</a>
+  <br />
+  <a href="/compiler-basics-llvm-conditionals.html">Compiler basics (4): LLVM conditionals and compiling fibonacci</a>
+</p>
+
+
+In this post we'll extend the [ulisp
+compiler](https://github.com/eatonphil/ulisp)'s LLVM backend to
+support compiling eliminating tail calls. And as we experiment with
+larger integers (it happens quickly in the fibonacci series), we'll
+discover exit codes no longer suffice for passing the result of a
+computation.
+
+Specifically, we're aiming to support the following:
+
+```lisp
+$ cat tests/tail-fib.lisp
+(def fib-help (a b n)
+     (if (= n 0)
+         a
+       (fib-help b (+ a b) (- n 1))))
+
+(def fib (n)
+     (fib-help 0 1 n))
+
+(def main ()
+     (print (fib 45)))
+$ node src/ulisp.js tests/fib.lisp
+$ ./build/prog
+TODO
+```
+
+With tail call elimination, we will turn the <code>fib-help</code>
+calls into a branch instruction instead of a call instruction.
+
+
+```asm
+...
+	add	rax, rsi
+	dec	rdx
+	mov	rdi, rsi
+	mov	rsi, rax
+	jmp	_fib               ## TAILCALL
+...
+```
+
+Instead of:
+
+```asm
+...
+	add	rax, rsi
+	dec	rdx
+	mov	rdi, rsi
+	mov	rsi, rax
+	call	_fib
+...
+```
+
+All [code is available on Github](https://github.com/eatonphil/ulisp)
+as is the [particular commit related to this
+post](https://github.com/eatonphil/ulisp/commit/213b83b8e952c210ba408bf38e59ae677d19e643).
+
+### print
+
+Exit codes are 8 bits, and our examples will quickly pass 8 bits of
+integers (that means the max value we can set is 255). So we'll need a
+way to print out values instead. To do this we could link against libc
+and use something like <code>printf</code>. But that is not strictly
+simpler right now because we don't have support for strings.
+
+The easiest thing to do is add support for system calls (we want the
+<code>sys_write</code> system call in particular) and a basic
+mechanism for getting pointers to values so that we can work around
+not have arrays.
+
+Here's a version of a <code>print<code> form that hacks around not
+having arrays to send each integer in a number to stdout.
+
+```lisp
+(def print-char (c)
+     (syscall/sys_write 1 &c 1))
+
+(def print (n)
+     (if (> n 9)
+         (print (/ n 10)))
+
+     (print-char (+ 48 (% n 10))))
+```
+
+In order to support this we need to add the
+<code>syscall/sys_write</code>, <code>></code>, <code>%</code>, and
+<code>/</code> builtin forms. We'll also need to add support for
+taking the address of a variable.
+
+#### System calls
+
+LLVM IR provides no high-level means for making system calls.  The
+only way is to use inline assembly. This syntax is based on GCC inline
+assembly and is confusing, with few explained examples, and unhelpful
+error messages.
+
+So I'm just going to assert this is how we'll do it:
+
+```llvm
+```
+
+#### <code>></code>, <code>&</code>, <code>/</code>
+
+#### References
+
+### Tail call elimination
+
+Tail call elimination, or tail call optimization, is the process of
+rewriting recursive function calls at compile time -- so long as the
+calls appear in a tail position -- into jumps. For examples of this
+and how it works outside of LLVM, see [this
+post](http://notes.eatonphil.com/tail-call-elimination.html). This
+prevents us from allocating new stack frames for each function call
+and, by extension, stack overflows from long-running recursive calls.
+
+We need to augment the compileX helper functions in ulisp to pass (or
+not pass) tail call information down the syntax tree. If we reach a
+call in a tail position, we flag it as a tail call and LLVM will
+eliminate it for us.
+
+#### Context
+
+We'll store whether or not the current syntax tree is in a tail
+position on a new Context object that will store our old Scope state
+and this new tailCall state.
+
+Top-level function declarations will be responsibile for
+setting <code>tailCall</code> to the function name in the child
+context. CompileX functions will be responsible for unsetting this
+variable in their context when reaching a part of the syntax tree that
+is no longer in a tail position.
+
+```javascript
+const { Scope } = require('./Scope');
+
+class Context {
+  constructor() {
+    this.scope = new Scope();
+    this.tailCall = null;
+  }
+
+  copy() {
+    const c = new Context();
+    c.tailCall = this.tailCall;
+    c.scope = this.scope.copy();
+    return c;
+  }
+}
+
+module.exports.Context = Context;
+```
+
+#### compileDefine
+
+This function is the same as before, except we act on the new Context
+object and we set the <code>context.tailCall</code> function to the
+current function's name.
+
+```javascript
+  compileDefine([name, params, ...body], destination, context) {
+    // Add this function to outer context.scope
+    const fn = context.scope.register(name);
+
+    // Copy outer context.scope so parameter mappings aren't exposed in outer context.scope.
+    const childContext = context.copy();
+    childContext.tailCall = fn.value;
+
+    const safeParams = params.map((param) =>
+      // Store parameter mapped to associated local
+      childContext.scope.register(param),
+    );
+
+    this.emit(
+      0,
+      `define i64 @${fn.value}(${safeParams
+        .map((p) => `${p.type} %${p.value}`)
+        .join(', ')}) {`,
+    );
+
+    // Pass childContext in for reference when body is compiled.
+    const ret = childContext.scope.symbol();
+    this.compileBegin(body, ret, childContext);
+
+    this.emit(1, `ret ${ret.type} %${ret.value}`);
+    this.emit(0, '}\n');
+  }
+```
+
+#### compileBegin
+
+A begin form allows the evaluation of multiple direct children where
+only the value of the last expression is returned. The only child that
+is in a tail position is the last expression.
+
+Again everything stays the same except we act on our new Context
+object and unset the <code>context.tailCall</code> value when
+compiling the first N - 1 children.
+
+```javascript
+  compileBegin(body, destination, context) {
+    body.forEach((expression, i) => {
+      const isLast = body.length - 1 === i;
+
+      // Clone just to reset tailCallTree
+      const contextClone = context.copy();
+      contextClone.scope = context.scope;
+      if (!isLast) {
+        contextClone.tailCallTree = [];
+      }
+
+      this.compileExpression(
+        expression,
+        isLast ? destination : context.scope.symbol(),
+	    contextClone,
+      );
+    });
+  }
+```
+
+#### compileIf
+
+Both sides of an if form are in tail call position, so nothing changes
+in this function other than that we act on the new Context object.
+
+```javascript
+  compileIf([test, thenBlock, elseBlock], destination, context) {
+    const testVariable = context.scope.symbol();
+    const result = context.scope.symbol('ifresult');
+    // Space for result
+    result.type = 'i64*';
+    this.emit(1, `%${result.value} = alloca i64, align 4`);
+
+    // Compile expression and branch
+    this.compileExpression(test, testVariable, context);
+    const trueLabel = context.scope.symbol('iftrue').value;
+    const falseLabel = context.scope.symbol('iffalse').value;
+    this.emit(1, `br i1 %${testVariable.value}, label %${trueLabel}, label %${falseLabel}`);
+
+    // Compile true section
+    this.emit(0, trueLabel + ':');
+    const tmp1 = context.scope.symbol();
+    this.compileExpression(thenBlock, tmp1, context);
+    this.emit(1, `store ${tmp1.type} %${tmp1.value}, ${result.type} %${result.value}, align 4`);
+    const endLabel = context.scope.symbol('ifend').value;
+    this.emit(1, 'br label %' + endLabel);
+
+    // Compile optional false section
+    this.emit(0, falseLabel + ':');
+    if (elseBlock) {
+      const tmp2 = context.scope.symbol();
+      this.compileExpression(elseBlock, tmp2, context);
+      this.emit(1, `store ${tmp2.type} %${tmp2.value}, ${result.type} %${result.value}, align 4`);
+    }
+    this.emit(1, 'br label %' + endLabel);
+
+    // Compile cleanup
+    this.emit(0, endLabel + ':');
+    this.emit(1, `%${destination.value} = load ${destination.type}, ${result.type} %${result.value}, align 4`);
+  }
+```
+
+#### compileExpression
