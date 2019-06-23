@@ -1,5 +1,5 @@
-# Compiler basics: LLVM tail calls and syscalls
-## June 8, 2019
+# Compiler basics: System calls in LLVM
+## June 22, 2019
 ###### javascript,compilers,llvm,tco,tce
 
 <p class="note">
@@ -14,7 +14,6 @@
   <br />
   <a href="/compiler-basics-llvm-conditionals.html">Compiler basics (4): LLVM conditionals and compiling fibonacci</a>
 </p>
-
 
 In this post we'll extend the [ulisp
 compiler](https://github.com/eatonphil/ulisp)'s LLVM backend to
@@ -72,7 +71,7 @@ All [code is available on Github](https://github.com/eatonphil/ulisp)
 as is the [particular commit related to this
 post](https://github.com/eatonphil/ulisp/commit/213b83b8e952c210ba408bf38e59ae677d19e643).
 
-### print
+### 8 bit exit codes
 
 Exit codes are 8 bits, and our examples will quickly pass 8 bits of
 integers (that means the max value we can set is 255). So we'll need a
@@ -111,10 +110,21 @@ only way is to use inline assembly. This syntax is based on GCC inline
 assembly and is confusing, with few explained examples, and unhelpful
 error messages.
 
-So I'm just going to assert this is how we'll do it:
+Thankfully the assembly code needed for a syscall is only one line,
+one word: the <code>syscall</code> assembly instruction. Then we use
+the inline assembly variable-to-register mapping functionality to line
+up all the parameters for the syscall. Here is an example:
 
 ```llvm
+%result = call i64 asm sideeffect "syscall", "=r,{rax},{rdi},{rsi},{rdx}" (i64 %raxArg, i64 %rdiArg, i64 %rsiArg, i64 %rdxArg)
 ```
+
+This says to execute the inline assembly string,
+"syscall". The <code>sideeffect</code> flag means that this assembly
+should always be run even if the result isn't used. <code>=r</code>
+means the inline assembly returns a value, and the rest of the string
+is the list of registers that arguments should be mapped to. Finally
+we call the function with all the LLVM variables we want to be mapped.
 
 #### <code>></code>, <code>&</code>, <code>/</code>
 
