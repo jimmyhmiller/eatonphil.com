@@ -1,0 +1,113 @@
+# On Python
+## January 14, 2020
+###### python
+
+I began programming in Python about ten years ago. I diversified
+throughout college and afterward to the point that
+[Scheme](https://github.com/eatonphil/bsdscheme),
+[JavaScript](https://github.com/eatonphil/jsc), and [Standard
+ML](https://github.com/eatonphil/ponyo) were my favorite
+languages. But until 2017 or so, Python had been my core professional
+language.
+
+There are good reasons to pick a language (hiring strategy, available
+frameworks, low-cost abstractions, etc.) and I make no attempt to
+encourage you one way or the other. The rest of this post are a few
+things I think about when deciding to use Python.
+
+### Scripting
+
+Python, at its best, is a replacement for Bash because of 1) error
+handling, 2) data structures, 3) control flow, 4) parallelism and 5)
+the standard library.
+
+#### Error handling
+
+It is really hard to write useful Bash code over anything but the
+short-term, even with static analysis tools like
+[ShellCheck](https://github.com/koalaman/shellcheck). At this point,
+most of the scripts I've touched at work use `set -e`. But since I
+haven't figured out how to correctly parse command line arguments
+(apparently), most scripts are not using `set -u`. Most scripts also
+aren't currently using `set -o pipefail`.
+
+Compared to Bash, Python is quite strict and will fail loudly when
+unexpected things happen. This is useful for debugging scripts you
+haven't recently touched or aren't familiar with.
+
+#### Data structures
+
+As you get more comfortable with Bash and while pursuing modularity
+you may find yourself building "arrays" or "maps" of white-space or
+colon delimited strings.
+
+#### Control flow
+
+#### Parallelism
+
+In Bash, every unit is a subprocess. But using the job control system
+(i.e. managing backgrounded jobs) is complex and error-prone.
+
+xargs, definitely built-in, and [GNU
+Parallel](https://www.gnu.org/software/parallel/), definitely not
+built-in are two options for managing processes in parallel. However
+in both cases you act on commands to be run as text.
+
+For example, I've got a helper function that I want to be able to run
+in parallel against a few different arguments. I have to source the
+file first to get access to the helper function and then pass in all
+the different arguments.
+
+Here is an example of this with xargs:
+
+```bash
+$ cat run.sh
+set -eo pipefail
+
+readonly SCRIPT_DIR="$(cd $( dirname ${BASH_SOURCE[0]} ) >/dev/null 2>&1 && pwd)"
+
+function upload_resources() {
+  repository="$1"
+  resources="$2"
+
+  ...
+  upload resources to repository with error handling
+  ...
+}
+
+function upload_all_resources() {
+  echo <<EOF | xargs -L 1 -P 4 -I CMD bash -c "source $SCRIPT_DIR/run.sh && upload_resources CMD"
+repo1 resource1.zip
+repo2 resource1.zip
+repo3 resource1.zip
+
+repo1 resource2.zip
+repo2 resource2.zip
+repo3 resource3.zip
+EOF
+}
+```
+
+Using GNU parallel is quite similar:
+
+```bash
+function upload_all_resources() {
+  echo <<EOF | parallel -L 1 -P 4 -I CMD bash -c "source $SCRIPT_DIR/run.sh && upload_resources CMD"
+repo1 resource1.zip
+repo2 resource1.zip
+repo3 resource1.zip
+
+repo1 resource2.zip
+repo2 resource2.zip
+repo3 resource3.zip
+EOF
+}
+```
+
+### Type-safety
+
+### Asynchronous programming
+
+### Review
+
+Python with its standard library is a huge improvement on Bash.
